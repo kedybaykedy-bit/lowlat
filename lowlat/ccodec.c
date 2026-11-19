@@ -329,6 +329,41 @@ static void dec_up(uint8_t*dst,const uint8_t*src,int hh,int ww){
     }
 }
 
+/* ---- band (scrolling strip) Paeth coder ---- */
+static size_t band_enc(uint8_t*dst,const uint8_t*frame,int W,int y0,int nrows,const uint8_t*uprow){
+    size_t p=0; const uint8_t*up=uprow;
+    for(int r=0;r<nrows;r++){
+        const uint8_t*cur=frame+((size_t)(y0+r)*W)*3;
+        for(int x=0;x<W*3;x++){
+            int a=x>=3?cur[x-3]:0;
+            int b=up?up[x]:0;
+            int cc=(up&&x>=3)?up[x-3]:0;
+            int pp=a+b-cc; int pa=iabs(pp-a),pb=iabs(pp-b),pc=iabs(pp-cc);
+            int pr=(pa<=pb&&pa<=pc)?a:(pb<=pc?b:cc);
+            dst[p++]=(uint8_t)((cur[x]-pr)&0xff);
+        }
+        up=cur;
+    }
+    return p;
+}
+static int band_dec(uint8_t*out,int W,int y0,int nrows,const uint8_t*raw,size_t rl,const uint8_t*uprow){
+    size_t p=0; const uint8_t*up=uprow;
+    for(int r=0;r<nrows;r++){
+        uint8_t*cur=out+((size_t)(y0+r)*W)*3;
+        for(int x=0;x<W*3;x++){
+            int a=x>=3?cur[x-3]:0;
+            int b=up?up[x]:0;
+            int cc=(up&&x>=3)?up[x-3]:0;
+            int pp=a+b-cc; int pa=iabs(pp-a),pb=iabs(pp-b),pc=iabs(pp-cc);
+            int pr=(pa<=pb&&pa<=pc)?a:(pb<=pc?b:cc);
+            if(p>=rl)return -1;
+            cur[x]=(uint8_t)((pr+raw[p++])&0xff);
+        }
+        up=cur;
+    }
+    return 0;
+}
+
 /* ============================ ENCODE ============================ */
 uint8_t *ccodec_encode(CCodec*c,const uint8_t*frame,int keyframe,int budget,int*outlen,int*ndirty_out){
     Buf out; buf_init(&out);
@@ -386,6 +421,42 @@ uint8_t *ccodec_encode(CCodec*c,const uint8_t*frame,int keyframe,int budget,int*
     int gdy = c->enable_me ? global_dy(c->h,c->w,frame,c->recon,c->last_gdy) : 0;
     c->last_gdy = gdy;
     int use_global = (iabs(gdy)>=1);
+    /* ---- BAND MODE: pure global scroll = shift + code only the new strip ---- */
+    if(c->enable_me && iabs(gdy)>=1 && iabs(gdy)<=128){
+        int nrows=iabs(gdy);
+        int by0 = gdy>0 ? (c->h-gdy) : 0;
+        size_t S=(size_t)c->h*c->w*3;
+        uint8_t*sh=malloc(S);
+        uint8_t*br=malloc((size_t)nrows*c->w*3+16);
+        if(sh&&br){
+            for(int y=0;y<c->h;y++){ int sy=y+gdy;
+                if(sy>=0&&sy<c->h) memcpy(sh+(size_t)y*c->w*3,c->recon+(size_t)sy*c->w*3,(size_t)c->w*3);
+                else memset(sh+(size_t)y*c->w*3,0,(size_t)c->w*3); }
+            const uint8_t*up=(by0>0)? sh+(size_t)(by0-1)*c->w*3 : NULL;
+            size_t bn=band_enc(br,frame,c->w,by0,nrows,up);
+            band_dec(sh,c->w,by0,nrows,br,bn,up);   /* reconstruct into candidate */
+            if(memcmp(sh,frame,S)==0){
+                Buf body; buf_init(&body);
+                if(deflate_into(br,bn,&body,9)==0){
+                    out.buf[0]=(uint8_t)(4|8);              /* global + band */
+                    buf_u8(&out,(uint8_t)(int8_t)gdy);
+                    buf_u32(&out,(uint32_t)body.len);
+                    buf_bytes(&out,body.buf,body.len);
+                    buf_free(&body);
+                    memcpy(c->recon,frame,S); memcpy(c->sent_src,frame,S);
+                    free(sh);free(br);
+                    c->st_bytes=(int)out.len;c->st_ndirty=nrows;c->st_cachehits=0;
+                    c->st_lossy=0;c->st_text=0;c->st_haslossy=0;
+                    memset(c->lossy_mask,0,(size_t)total);
+                    *outlen=(int)out.len; if(ndirty_out)*ndirty_out=nrows;
+                    if(out.err){buf_free(&out);return NULL;} return out.buf;
+                }
+                buf_free(&body);
+            }
+        }
+        free(sh);free(br);
+        /* else fall through to normal tile path */
+    }
     uint8_t*shadow=malloc((size_t)c->h*c->w*3);
     if(!shadow){buf_free(&out);return NULL;}
     if(use_global){
@@ -608,6 +679,28 @@ uint8_t *ccodec_decode(CCodec*c,const uint8_t*data,int datalen,int*outlen){
         *outlen=c->h*c->w*3; return frame;
     }
 
+    if(flags&8){ /* BAND mode */
+        if(p+1>(size_t)datalen){free(frame);return NULL;}
+        int bgdy=(int8_t)data[p++];
+        if(p+4>(size_t)datalen){free(frame);return NULL;}
+        uint32_t blen=data[p]|(data[p+1]<<8)|(data[p+2]<<16)|((uint32_t)data[p+3]<<24);p+=4;
+        if(p+blen>(size_t)datalen){free(frame);return NULL;}
+        int nrows=iabs(bgdy), by0=bgdy>0?(c->h-bgdy):0;
+        size_t rawb=(size_t)nrows*c->w*3+16;
+        uint8_t*br=malloc(rawb); if(!br){free(frame);return NULL;}
+        uLongf rl=rawb;
+        if(uncompress(br,&rl,data+p,blen)!=Z_OK){free(br);free(frame);return NULL;}
+        for(int y=0;y<c->h;y++){ int sy=y+bgdy;
+            if(sy>=0&&sy<c->h) memcpy(frame+(size_t)y*c->w*3,c->recon+(size_t)sy*c->w*3,(size_t)c->w*3);
+            else memset(frame+(size_t)y*c->w*3,0,(size_t)c->w*3); }
+        const uint8_t*up=(by0>0)? frame+(size_t)(by0-1)*c->w*3 : NULL;
+        if(band_dec(frame,c->w,by0,nrows,br,rl,up)!=0){free(br);free(frame);return NULL;}
+        free(br);
+        memcpy(c->recon,frame,(size_t)c->h*c->w*3);
+        memset(c->lossy_mask,0,(size_t)c->nt*c->nx);
+        c->st_bytes=datalen;c->st_lossy=0;c->st_haslossy=0;
+        *outlen=c->h*c->w*3; return frame;
+    }
     int gdy=0, use_global=(flags&4)?1:0;
     if(use_global){ if(p+1>(size_t)datalen){free(frame);return NULL;} gdy=(int8_t)data[p++]; }
     if(p+2>(size_t)datalen){free(frame);return NULL;}

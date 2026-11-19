@@ -20,14 +20,14 @@ All numbers are **real**, measured, and **bit-exact verified** (non-lossy tiles 
 
 ### Desktop activity (lossless)
 
-| resolution | activity | bitrate | notes |
+| resolution | activity | bitrate (lossless) | notes |
 |---|---|---|---|
-| 720p  | idle    | **1.5 KB/s** | cursor/blink only |
-| 720p  | typing  | **3.1 KB/s** | text never degraded |
-| 1080p | idle    | **1.2 KB/s** | |
-| 1080p | typing  | **2.8 KB/s** | |
-| 2K    | typing  | **~3.5 KB/s** | |
-| any   | busy (heavy) | 14–20 KB/s | over budget → adaptive |
+| 480p  | idle    | **2.1 KB/s** | cursor/blink only |
+| 720p  | typing  | **0.9 KB/s** | text never degraded |
+| 1080p | idle    | **1.0 KB/s** | |
+| 1080p | typing  | **0.7 KB/s** | |
+| 1080p | busy    | 8.8 KB/s | still lossless |
+| any   | very busy | 12–20 KB/s | >budget → adaptive |
 
 ### Repeated-pattern cache (toggle A↔B UI)
 
@@ -36,15 +36,22 @@ All numbers are **real**, measured, and **bit-exact verified** (non-lossy tiles 
 | total bytes | 20,216 B | **5,592 B** (3.6×) |
 | cache refs | 0 | **373** |
 
-### Smooth article scrolling (text, global-scroll mode)
+### Smooth article scrolling — lossless (global-scroll *band* mode)
 
-| scroll speed | lossless | with @10KB/s budget |
+Pure vertical scroll only sends the newly-exposed strip (Paeth + deflate); the rest
+is one shift. Lossless, full-frame bit-exact:
+
+| scroll speed | px/s | bitrate (lossless) |
 |---|---|---|
-| 1.5 px/frame | ~20–42 KB/s | **~10–11 KB/s** (margins degraded, text exact) |
-| 4 px/frame | ~125 KB/s | adaptively reduced |
+| 1.0 px/frame | 30 | **6.4 KB/s** |
+| 1.5 px/frame | 45 | **9.1 KB/s**  ← under 10 KB/s |
+| 2.0 px/frame | 60 | 11.7 KB/s |
+| 4.0 px/frame | 120 | 22.1 KB/s |
 
-With the 10 KB/s budget the encoder degrades only the non-text paper/margins of the
-scrolled page, so dense text stays pixel-exact and the scroll stays smooth at ~10 KB/s.
+Cost is proportional to *newly revealed text*, which is genuine information.
+At a normal reading scroll the lossless stream fits under 10 KB/s. (Earlier builds
+were ~40 KB/s here because the strip was re-coded tile-by-tile with per-tile
+overhead; the band path removes that.)
 
 Scrolling reveals genuinely new text; the rate is proportional to new content.
 Static/typing/interactive desktops sit far below 10 KB/s — that is where a VNC
