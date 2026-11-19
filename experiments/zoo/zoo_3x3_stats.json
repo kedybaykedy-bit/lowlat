@@ -1,0 +1,39 @@
+{
+  "grid": "3x3",
+  "tiles": 9,
+  "resolution": [
+    1920,
+    1080
+  ],
+  "fps": 15.0,
+  "frames": 284,
+  "duration_s": 18.93,
+  "lossless": {
+    "keyframe_bytes": 548040,
+    "total_bytes": 195482329,
+    "rate_kbps_with_kf": 10082.784,
+    "steady_kbps": 10090.045,
+    "amortized_60s_kbps": 10223.844,
+    "per_frame_mean": 688813,
+    "bit_exact": true,
+    "enc_ms_mean": 326.9,
+    "dec_ms_mean": 18.07
+  },
+  "adaptive": {
+    "budget_kbps": 10.0,
+    "per_frame_budget": 682,
+    "keyframe_bytes": 548040,
+    "total_bytes": 33698093,
+    "rate_kbps_with_kf": 1738.114,
+    "steady_kbps": 1715.889,
+    "amortized_60s_kbps": 1849.687,
+    "per_frame_mean": 117137,
+    "lossy_tiles_mean": 1577.7,
+    "lossy_tiles_max": 1614,
+    "total_tiles": 2040,
+    "nonlossy_tile_violations": 0,
+    "enc_ms_mean": 862.55,
+    "wall_s": 244.1
+  },
+  "elapsed_s": 762.5
+}
