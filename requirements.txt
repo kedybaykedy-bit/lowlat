@@ -1,0 +1,4 @@
+numpy>=1.24
+opencv-python-headless>=4.8
+# optional, only for the neural-codec experiment (lowlat/model.py, train.py, codec.py):
+# torch>=2.0

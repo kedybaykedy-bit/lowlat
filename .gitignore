@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.so
+out/
+models/*.pt
+*.mp4
+*.gif
+.DS_Store

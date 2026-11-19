@@ -1,0 +1,11 @@
+[project]
+name = "lowlat"
+version = "1.0.0"
+description = "Lossless-first, text-protected remote display codec (a VNC replacement)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["numpy>=1.24", "opencv-python-headless>=4.8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
