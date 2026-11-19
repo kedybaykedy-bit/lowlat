@@ -38,10 +38,13 @@ All numbers are **real**, measured, and **bit-exact verified** (non-lossy tiles 
 
 ### Smooth article scrolling (text, global-scroll mode)
 
-| scroll speed | bitrate | lossless |
+| scroll speed | lossless | with @10KB/s budget |
 |---|---|---|
-| 1.5 px/frame | ~20–42 KB/s | ✅ |
-| 4 px/frame | ~125 KB/s | ✅ |
+| 1.5 px/frame | ~20–42 KB/s | **~10–11 KB/s** (margins degraded, text exact) |
+| 4 px/frame | ~125 KB/s | adaptively reduced |
+
+With the 10 KB/s budget the encoder degrades only the non-text paper/margins of the
+scrolled page, so dense text stays pixel-exact and the scroll stays smooth at ~10 KB/s.
 
 Scrolling reveals genuinely new text; the rate is proportional to new content.
 Static/typing/interactive desktops sit far below 10 KB/s — that is where a VNC
