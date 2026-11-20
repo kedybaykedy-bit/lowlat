@@ -27,6 +27,13 @@ wire  ─► inflate ─► [RLE bitmap] ─► [per-tile: PRED/REF/varint/subma
 All numbers are **real**, measured, and **bit-exact verified** (non-lossy tiles pixel-exact).
 `enc/dec` are single-core on a laptop; the core is C.
 
+Demo recordings of the C core on a real 60 s 1080p capture:
+[lossless](https://github.com/kedybaykedy-bit/lowlat/releases/download/c-codec-demos/screen_60s_lowlat_lossless.mp4) ·
+[adaptive](https://github.com/kedybaykedy-bit/lowlat/releases/download/c-codec-demos/screen_60s_lowlat_adaptive.mp4)
+([timeline](https://github.com/kedybaykedy-bit/lowlat/releases/download/c-codec-demos/screen_60s_timeline.png),
+[stats](https://github.com/kedybaykedy-bit/lowlat/releases/download/c-codec-demos/screen_60s_stats.json),
+[release](https://github.com/kedybaykedy-bit/lowlat/releases/tag/c-codec-demos))
+
 ### Desktop activity (lossless)
 
 | resolution | activity | bitrate (lossless) | notes |

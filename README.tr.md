@@ -29,6 +29,13 @@ Tüm sayılar **gerçektir**, ölçülmüştür ve **bit-birebir doğrulanmışt
 (kayıp-olmayan karolar piksel birebir). `enc/dec` tek-çekirdekli bir
 dizüstünde; çekirdek C'dir.
 
+C çekirdeğinin gerçek60 sn'lik1080p kaydı üzerindeki demoları:
+[kayıpsız](https://github.com/kedybaykedy-bit/lowlat/releases/download/c-codec-demos/screen_60s_lowlat_lossless.mp4) ·
+[uyarlanır](https://github.com/kedybaykedy-bit/lowlat/releases/download/c-codec-demos/screen_60s_lowlat_adaptive.mp4)
+([zaman çizelgesi](https://github.com/kedybaykedy-bit/lowlat/releases/download/c-codec-demos/screen_60s_timeline.png),
+[istatistik](https://github.com/kedybaykedy-bit/lowlat/releases/download/c-codec-demos/screen_60s_stats.json),
+[release](https://github.com/kedybaykedy-bit/lowlat/releases/tag/c-codec-demos))
+
 ### Masaüstü etkinliği (kayıpsız)
 
 | çözünürlük | etkinlik | bit hızı (kayıpsız) | not |
