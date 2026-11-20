@@ -1,5 +1,14 @@
 # LOWLAT — a lossless-first remote-display codec
 
+**English | [Türkçe](README.tr.md)**
+
+> ⚠️ **Status: experimental.** This repository is a proof-of-concept /
+> experiment (a VNC-replacement codec explored end-to-end: classical C core,
+> rate-controlled streaming mode, measurement harnesses, published demos).
+> Development stopped here in its final state (November 2026) and the project
+> is **not actively maintained** — but it is complete enough to study, fork
+> and build on. Use it however you like: **MIT licensed.**
+
 **A VNC replacement that is lossless by default and degrades *only* where it must.**
 It streams a desktop at 30 fps over an extremely small bitrate (target **10 KB/s**),
 keeps **text pixel-exact**, caches repeated patterns, and turns full-screen
