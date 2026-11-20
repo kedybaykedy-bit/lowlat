@@ -83,7 +83,8 @@ budget:  allowed(t) = min(900 KB, burst + 15 KB/s·t, 900 KB − 10 KB/s·(60 s 
 | [`stats.json`](stats.json) | full run: per-frame bytes, modes, quality histogram, PSNR |
 | [`contact_sheet.png`](contact_sheet.png) | source vs decode samples |
 | [`timeline.png`](timeline.png) | rate + PSNR over the 60 s |
-| `decoded.mp4`, `compare_sbs.mp4` | full decode & side-by-side (see release) |
+| [`lowlat-s_15kbps_compare.mp4`](https://github.com/kedybaykedy-bit/lowlat/releases/download/demo-15kbps/lowlat-s_15kbps_compare.mp4) | SOURCE \| LOWLAT-S side-by-side (release) |
+| [`lowlat-s_15kbps_decoded.mp4`](https://github.com/kedybaykedy-bit/lowlat/releases/download/demo-15kbps/lowlat-s_15kbps_decoded.mp4) | what the remote viewer sees (release) |
 
 ## Reproduce
 

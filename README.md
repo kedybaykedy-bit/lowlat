@@ -84,7 +84,8 @@ The encoder banks credit during holds, refreshes the whole screen with
 coherent full-frame snapshots when activity demands it, and paints calm
 updates as whole text-lines at q92 — see
 [`experiments/streaming/`](experiments/streaming/) for the contact sheet,
-rate/PSNR timeline and full stats.
+rate/PSNR timeline and full stats, or watch the
+[side-by-side demo video](https://github.com/kedybaykedy-bit/lowlat/releases/download/demo-15kbps/lowlat-s_15kbps_compare.mp4).
 
 ---
 
