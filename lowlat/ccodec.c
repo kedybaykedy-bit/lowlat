@@ -223,6 +223,7 @@ static int dec_submask(const uint8_t*raw,size_t rl,size_t*po,const uint8_t*pred,
 /* --------------------------------------------------------------- codec */
 typedef struct {
     int h,w,tile,nt,nx,enable_me,cache_cap;
+    int me_search,tile_level;   /* tunables: LOWLAT_ME_SEARCH / LOWLAT_DEFLATE_TILE */
     uint8_t *recon;
     uint8_t *sent_src;   /* last SOURCE content we transmitted per pixel (basis for dirty) */
     TCache cache;
@@ -238,6 +239,8 @@ CCodec *ccodec_new(int h,int w,int tile,int enable_me,int cache_cap){
     CCodec*c=calloc(1,sizeof(CCodec)); if(!c)return NULL;
     c->h=h;c->w=w;c->tile=tile;c->nt=(h+tile-1)/tile;c->nx=(w+tile-1)/tile;
     c->enable_me=enable_me; c->cache_cap=cache_cap<0?0:cache_cap;
+    { const char*e=getenv("LOWLAT_ME_SEARCH"); c->me_search=e?atoi(e):24; if(c->me_search<0)c->me_search=0; }
+    { const char*e=getenv("LOWLAT_DEFLATE_TILE"); c->tile_level=e?atoi(e):9; if(c->tile_level<1||c->tile_level>9)c->tile_level=9; }
     c->recon=calloc((size_t)h*w*3,1);
     c->sent_src=calloc((size_t)h*w*3,1);
     c->lossy_mask=calloc((size_t)c->nt*c->nx,1);
@@ -437,7 +440,7 @@ uint8_t *ccodec_encode(CCodec*c,const uint8_t*frame,int keyframe,int budget,int*
             band_dec(sh,c->w,by0,nrows,br,bn,up);   /* reconstruct into candidate */
             if(memcmp(sh,frame,S)==0){
                 Buf body; buf_init(&body);
-                if(deflate_into(br,bn,&body,9)==0){
+                if(deflate_into(br,bn,&body,c->tile_level)==0){
                     out.buf[0]=(uint8_t)(4|8);              /* global + band */
                     buf_u8(&out,(uint8_t)(int8_t)gdy);
                     buf_u32(&out,(uint32_t)body.len);
@@ -532,7 +535,7 @@ uint8_t *ccodec_encode(CCodec*c,const uint8_t*frame,int keyframe,int budget,int*
 
         /* prediction vs shadow (raster-updated) */
         int mvy=0,mvx=0;
-        if(c->enable_me){ motion_search(c->h,c->w,ct,shadow,y0,x0,hh,ww,24,last_mvy,last_mvx,&mvy,&mvx);
+        if(c->enable_me){ motion_search(c->h,c->w,ct,shadow,y0,x0,hh,ww,c->me_search,last_mvy,last_mvx,&mvy,&mvx);
                           last_mvy=mvy;last_mvx=mvx; }
         int py=y0+mvy,px=x0+mvx;
         if(py<0)py=0; if(px<0)px=0; if(py+hh>c->h)py=c->h-hh; if(px+ww>c->w)px=c->w-ww;

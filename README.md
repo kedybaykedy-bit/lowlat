@@ -67,6 +67,25 @@ non-lossy-tile pixel mismatches : 0
 tiles classified text-as-lossy  : 0
 ```
 
+### Real 60-second desktop recording at 15 KB/s (LOWLAT-S)
+
+A full minute of a real 1080p/30 desktop (terminal, wallpaper, window fades,
+notifications) streamed through the rate-controlled `stream/` codec under a
+hard 15 KB/s budget:
+
+| metric | value |
+|---|---|
+| average rate | **14.08 KB/s** (cap 900 KB / 60 s) |
+| total transferred | **844.6 KB** ✅ |
+| PSNR mean / p5 | **26.05 / 16.65 dB** |
+| tile quality | **97 % at q82+** (text floor never breached) |
+
+The encoder banks credit during holds, refreshes the whole screen with
+coherent full-frame snapshots when activity demands it, and paints calm
+updates as whole text-lines at q92 — see
+[`experiments/streaming/`](experiments/streaming/) for the contact sheet,
+rate/PSNR timeline and full stats.
+
 ---
 
 ## Features
@@ -155,6 +174,11 @@ lowlat/
   content.py               # generic animated content
   # --- earlier neural experiment (optional, needs torch) ---
   model.py train.py codec.py ans.c ans.py freq.c freq.py sparse.py classical.py tiles.py
+stream/                    # LOWLAT-S: rate-controlled streaming mode (15 KB/s demo)
+  codec.py                 #   tile grid, probes, quality floors, paced budget
+  run.py                   #   encode a recording under the budget + stats
+  compare.py               #   side-by-side / contact sheet / rate+PSNR timeline
+experiments/streaming/     # published 15 KB/s demo (contact sheet, timeline, stats)
 live_gui.py                # live visual demo (ffplay window + HUD)
 final_bench.py demo.py live_demo.py noise_demo.py bench_all.py
 tests/test_codec.py

@@ -57,6 +57,8 @@ _lib.ccodec_get_stats.argtypes = [
 _lib.ccodec_lossy_mask.restype = ctypes.POINTER(ctypes.c_uint8)
 _lib.ccodec_lossy_mask.argtypes = [ctypes.c_void_p]
 _libc = ctypes.CDLL(None)
+_lib.ccodec_dbg_methods.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+
 _libc.free.argtypes = [ctypes.c_void_p]
 
 
@@ -141,6 +143,12 @@ class CCodec:
         s = self.last_stats
         s.bytes, s.dirty, s.cache_hits = b.value, d.value, h.value
         s.lossy_tiles, s.text_tiles, s.has_lossy = lo.value, te.value, hl.value
+
+    def dbg_methods(self) -> list:
+        """Counts of chosen tile methods [0..7] for the last encoded frame."""
+        arr = (ctypes.c_int * 8)()
+        _lib.ccodec_dbg_methods(self._h, arr)
+        return list(arr)
 
     def lossy_mask(self) -> np.ndarray:
         """Per-tile lossy flag (nt,nx) for the last decoded/encoded frame."""
