@@ -17,23 +17,38 @@ Bottom: decoded-vs-source PSNR over time.*
 
 | metric | value |
 |---|---|
-| **Average rate** | **14.92 KB/s** (budget 15.0, hard cap 900 KB) |
-| **Total transferred** | **895.0 KB** / 60 s (cap 900 KB) ✅ |
-| **Max send gap** (silent wire) | **0.7 s** — zero gaps over 2 s |
-| PSNR mean / p5 | **24.5 dB / 13.2 dB** |
-| Frames sent as tile updates | 651 |
-| Frames sent as crop-bands | 141 |
-| Frames held (banking credit) | 895 |
+| **Average rate** | **14.97 KB/s** (budget 15.0, hard cap 900 KB) |
+| **Total transferred** | **898.3 KB** / 60 s (cap 900 KB) ✅ |
+| **Max send gap** (silent wire) | **0.4 s** — zero gaps over 2 s |
+| **Interactive latency** (small change → on screen) | **p50 0.13 s** (was 0.73 s before recency scheduling) |
+| PSNR mean / p5 | **24.28 dB / 13.44 dB** |
+| Frames sent as tile updates | 1235 |
+| Frames sent as crop-bands | 103 |
+| Frames held (banking credit) | 398 |
 | Full snapshots needed | **0** (progressive bands replace them) |
-| Tile quality floor | **q82+** (691× q82–92; text never mushed) |
+| Tile quality floor | **q82+** — 3100 of 3182 encodes at q82–92 (97 %) |
 | Band quality floor | q75 |
 | Decode fidelity | every sent tile/band is bit-consistent WebP; holds show the last good screen |
+| Encode speed (offline harness) | **0.4× realtime** (2.6× after profiled hot-path cleanup; byte-identical output) |
 
-The headline number is the **send gap**: the wire never goes silent for more
-than 0.7 s, so the viewer always sees *something* arriving. A previous
-snapshot-banking build reached a higher mean PSNR (26.1 dB) only by freezing
-the stream for up to 8.4 s while it banked a full frame — exactly the
-multi-second dead air this build eliminates.
+### Latency is the headline
+
+A remote viewer's core experience is *how long until what I just did
+appears*. Measured per 32×32 tile: a "stale run" = decode does not match
+the current source for that long. Small-change events (≤12 tiles changed
+in the source that frame ≈ typing, status updates, cursor):
+
+| interactive event | before (age-ordered only) | **now (recency lane A)** |
+|---|---|---|
+| p50 | 0.73 s | **0.13 s** |
+| slow events >3 s during the typing flood (t=32–60 s) | 77 | **26** |
+| max send gap on the wire | 0.7 s | **0.4 s** |
+
+The mechanism: a **recency-first interactive lane** packs the newest runs
+first every frame (budget = min(credit, 1.5 KB, rate-share)), so a line
+the user just typed never queues behind bulk backlog — while a hard
+**rate share (5 KB/s)** guarantees bulk bands always keep ≥10 KB/s to
+bank against, so the two lanes cannot starve each other.
 
 ## How it works
 
@@ -48,53 +63,52 @@ budget:  allowed(t) = min(900 KB, burst + 15 KB/s·t, 900 KB − 10 KB/s·(60 s 
    (threshold kills codec noise; no drift: every send is a fresh deterministic
    WebP of the source, the decoder just replaces tiles).
 3. **Content-aware size probes** — a quarter-frame WebP (calibrated ×6.5 on 7
-   representative frames) and sampled dirty tiles estimate packet costs
-   within ~15 ms, so the encoder never guesses.
+   representative frames) and sampled dirty tiles estimate packet costs,
+   so the encoder never guesses.
 4. **Quality floors** — tiles ≥ q82, bands ≥ q75. When credit cannot
    afford the floor, the frame is *held* (0 bytes on the wire) instead of
    shipping mush.
-5. **Dirty-age scheduling** — every tile carries how long it has been
-   continuously dirty; runs and bands are served oldest-first, so a change
-   that just arrived cannot be starved by newer churn. Wide lines are
-   *prefix-packed*: a text line draws in over a frame or two rather than
-   waiting for enough credit for the whole run.
-6. **Progressive crop-bands** — dense changes (≥ 35 % of the bbox) are sent
-   as whole horizontal bands of the changed region, age-targeted so the
-   longest-waiting rows paint first, largest band that fits the current
-   credit (full-bbox down to a single row). This replaces both scattered
-   tile storms and multi-second snapshot holds: the viewer watches the
-   update arrive.
+5. **Two-lane scheduling** — lane A packs runs **newest-first** (recency =
+   urgency) under a per-frame cap + a 5 KB/s long-run share; bulk is
+   **dense → age-targeted crop-bands** (full-bbox down to a single row,
+   largest that fits) and **sparse → age-oldest prefix-packed runs**
+   (a wide line draws in over a frame or two rather than waiting for
+   enough credit for the whole run).
+6. **P_BATCH** — when lane A and a band both fire in one frame they ride
+   together in a single batched packet (one frame, two segments).
 
 ### What the timeline shows
 
 * **t ≈ 0** — keyframe burst (141 KB), the one unavoidable spike.
 * **t ≈ 0.5 / 2.5 / 4.0 s** — three full-screen scene cuts (96 % of pixels
   change each time). At 15 KB/s one 1080p refresh costs ~70–90 KB ≈ 5–6 s of
-  budget, so the decoder cannot be perfect during a cut — but this build
-  keeps the wire busy painting the new scene in (max gap 0.7 s) instead of
-  freezing on the old one. PSNR dips to ~6 dB mid-cut and recovers as bands
-  land.
+  budget, so the decoder cannot be perfect during a cut — but the wire never
+  goes silent (max gap 0.4 s): the new scene is painted in progressively
+  instead of freezing on the old one. Whole-frame PSNR stays below 18 dB
+  for 7.8 s (the cut storm), then recovers.
 * **Quiet desktop** — near-zero traffic (1-byte holds), PSNR climbs to
   30–37 dB as updates converge.
-* **Activity bursts** — dirty-age bands + row-runs stream continuously; the
-  1 s-window rate line shows brief spikes above target when saved credit is
-  spent. The 60 s average stays 14.92 KB/s and the hard cap (900 KB) is
-  never crossed.
+* **Typing / TUI output (t≈ 32+)** — lane A delivers each new line with
+  0.13 s median latency while bands keep the rest of the screen current.
 * **Last 10 s** — the tail reserve keeps ~10 KB/s available so the ending
   never starves.
 
 ### Honest limits
 
 * A full-screen scene cut at 15 KB/s is ~5–6 s of budget (physics, not a
-  codec bug). Quality dips during cuts; the guarantee is that *updates never
-  stop flowing* (≤ 0.7 s silence), not that a cut arrives instantly.
-* Whole-frame PSNR stays below 18 dB for 15.9 s of the minute (26.5 %),
+  codec bug). Quality dips during cuts; the guarantee is *updates never
+  stop flowing* (≤ 0.4 s silence), not that a cut arrives instantly.
+* Whole-frame PSNR stays below 18 dB for 15.2 s of the minute (25.4 %),
   concentrated in the cut storm at the start and busy stretches around
   t = 12–23 s — during those windows most of the screen is old-but-coherent
   while new bands land, not a broken mosaic.
-* This is an offline Python harness (cv2 + libwebp): ~0.1× realtime encode.
-  The codec logic (probes ≈ 15 ms, tile WebP ≈ 0.5 ms) maps directly to a
-  C/ffmpeg implementation for real-time use.
+* Bulk (large-change) events still median ~2.2 s: delivering ~200 KB of
+  new content through a 15 KB/s pipe takes ~13 s of channel time; the
+  scheduler chooses *who waits*, not whether physics applies.
+* This is an offline Python harness (cv2 + libwebp): 0.4× realtime after
+  profiled hot-path cleanup (all changes byte-identical — see
+  [`profile_report.md`](profile_report.md)). The codec logic maps
+  directly to a C/ffmpeg implementation for real-time use.
 * The wire model treats a *hold* as absence of update (0 bytes) — how any
   TCP/WebSocket screen stream works.
 
@@ -112,11 +126,14 @@ budget:  allowed(t) = min(900 KB, burst + 15 KB/s·t, 900 KB − 10 KB/s·(60 s 
 
 ```bash
 # encode + decode the recording under the 15 KB/s budget
-python stream/run.py --src out/demo/screen_60s.mp4 --out out/stream/v9 \
+python stream/run.py --src out/demo/screen_60s.mp4 --out out/stream/v13 \
     --rate 15 --burst 160 --save-video
 
 # side-by-side video, contact sheet, rate/PSNR timeline
 python stream/compare.py --src out/demo/screen_60s.mp4 \
-    --decoded out/stream/v9/decoded.mp4 \
-    --stats  out/stream/v9/stats.json --outdir out/stream/v9/artifacts
+    --decoded out/stream/v13/decoded.mp4 \
+    --stats  out/stream/v13/stats.json --outdir out/stream/v13/artifacts
+
+# change-to-display latency (per-tile stale runs, interactive vs bulk)
+python stream/latency.py --decoded out/stream/v13/decoded.mp4
 ```

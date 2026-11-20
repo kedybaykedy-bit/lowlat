@@ -75,16 +75,17 @@ codec under a hard 15 KB/s budget:
 
 | metric | value |
 |---|---|
-| average rate | **14.92 KB/s** (cap 900 KB / 60 s) |
-| total transferred | **895.0 KB** ✅ |
-| max send gap (silent wire) | **0.7 s** — never dead for more than a beat |
-| PSNR mean / p5 | **24.5 / 13.2 dB** |
-| tile quality | **q82+ floor** (text never mushed; bands ≥ q75) |
+| average rate | **14.97 KB/s** (898.3 / 900 KB) ✅ |
+| max send gap (silent wire) | **0.4 s** — never dead for more than a beat |
+| interactive latency (typing → screen) | **p50 0.13 s** |
+| PSNR mean / p5 | **24.28 / 13.44 dB** |
+| tile quality | **q82+ floor** (97 % of encodes q82–92; bands ≥ q75) |
 
-The encoder schedules by *dirty-age* (oldest waiting change first), paints
-dense changes as age-targeted crop-bands that stream in progressively, and
-prefix-packs text lines so partial credit still makes progress — the wire
-never freezes for a multi-second snapshot bank. See
+The encoder schedules two lanes: **recency-first interactive** (the line
+you just typed ships first, rate-shared so it can't starve bulk) and
+**bulk** (dense changes as age-targeted crop-bands, sparse as
+age-oldest prefix-packed runs) — the wire never freezes for a
+multi-second snapshot bank. See
 [`experiments/streaming/`](experiments/streaming/) for the contact sheet,
 rate/PSNR timeline and full stats, or watch the
 [side-by-side demo video](https://github.com/kedybaykedy-bit/lowlat/releases/download/demo-15kbps/lowlat-s_15kbps_compare.mp4).

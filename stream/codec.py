@@ -28,6 +28,7 @@ P_KEY = 1
 P_FULL = 2          # whole-frame snapshot (legacy)
 P_TILES = 3
 P_CROP = 4          # bbox snapshot: only the changed region (v4)
+P_BATCH = 5         # one frame, N segments: [u8 n][u16 len][seg]...
 
 TILE = 32
 DIRTY_PX_MIN = 6      # changed pixels (|d|>3) inside a tile to call it dirty
@@ -37,6 +38,9 @@ Q_FLOOR_TILE = 82     # text tiles never sent below this (readability)
 Q_FLOOR_FULL = 75     # full-frame snapshots floor
 HOLD_ACTIVITY = 0.15  # frame-to-frame churn -> hold, save for a full snapshot
 HOLD_BACKLOG = 0.30   # big backlog vs sent_src -> same
+A_RES = 1536          # lane A per-frame byte cap (burst headroom)
+A_RATE = 5.0 * 1024   # lane A long-run share of the wire (bytes/s)
+A_BURST = 6.0 * 1024  # lane A startup allowance (bytes)
 
 # Calibration: est_full(q) = quarter82_probe * _FULL_F[q]  (measured on 7
 # representative frames; full/quarter ratio is content-stable ~6.5x)
@@ -116,6 +120,7 @@ class ScreenEncoder:
         # (the v6 bug: top-of-bbox bands re-hit a churny top forever while
         # the bottom stayed 100% stale for 10+ seconds).
         self.age = np.zeros(self.ntiles, np.uint32)
+        self._a_spent = 0.0     # cumulative bytes spent by lane A (rate share)
         self.stats = dict(frames=0, skip=0, key=0, full=0, tiles=0,
                           frozen=0, bytes=0, dirty_sum=0, q_hist={})
 
@@ -174,10 +179,13 @@ class ScreenEncoder:
         if self.sent_src is None:
             self._dirty2d = np.ones((self.th, self.tw), dtype=bool)
             return list(range(self.ntiles))
-        d = np.abs(frame.astype(np.int16) - self.sent_src.astype(np.int16)).max(axis=2)
+        # cv2.absdiff + channel-max: bit-identical to the int16
+        # np.abs(...).max(axis=2) form, ~8x faster (profile: 51.7 -> 6 ms)
+        d8 = cv2.absdiff(frame, self.sent_src)
+        d = np.maximum(np.maximum(d8[..., 0], d8[..., 1]), d8[..., 2])
         big = d > DIRTY_D
         ph, pw = self.th * TILE, self.tw * TILE
-        padded_d = np.zeros((ph, pw), np.int16)
+        padded_d = np.zeros((ph, pw), np.uint8)
         padded_d[: self.h, : self.w] = d
         padded_b = np.zeros((ph, pw), bool)
         padded_b[: self.h, : self.w] = big
@@ -188,19 +196,18 @@ class ScreenEncoder:
         mag = np.where(counts >= DIRTY_PX_MIN, sums / np.maximum(counts, 1), 0.0)
         self._dirty2d = counts >= DIRTY_PX_MIN
         order = np.argsort(-mag, axis=None)
-        out = []
-        for flat in order:
-            r, c = divmod(int(flat), self.tw)
-            if mag[r, c] <= 0:
-                break
-            out.append(r * self.tw + c)
-        return out
+        # argsort desc puts all mag<=0 at the tail, so filtering them is
+        # identical to the old loop's break-on-first-nonpositive
+        keep = order[mag.ravel()[order] > 0]
+        r, c = np.divmod(keep, self.tw)
+        return (r * self.tw + c).tolist()
 
     def _row_runs(self, dirty: list[int]) -> list[list[int]]:
         """Group magnitude-sorted dirty tiles into contiguous horizontal runs
         (per row). Sending whole runs keeps text lines coherent - no holes."""
         runs: list[list[int]] = []
         seen: set[int] = set()
+        dirty_set = set(dirty)     # O(1) membership (31x faster, identical)
         for i in dirty:
             if i in seen:
                 continue
@@ -212,7 +219,7 @@ class ScreenEncoder:
                 tx2 = tx + d
                 while 0 <= tx2 < self.tw:
                     j = ty * self.tw + tx2
-                    if j in dirty and j not in seen:
+                    if j in dirty_set and j not in seen:
                         run.append(j)
                         seen.add(j)
                         tx2 += d
@@ -293,31 +300,97 @@ class ScreenEncoder:
         n = len(dirty)
         self._build_probes(frame, dirty)
 
-        # --- decide (v4) ---
-        # 1) bbox snapshot: WebP of ONLY the changed region - much cheaper
-        #    than a whole frame when the change is localized, so credit
-        #    lasts longer and stale windows shrink. Only when the change
-        #    is dense inside its bbox (otherwise rows are cheaper).
-        # 2) all dirty tiles if they fit completely.
-        # 3) hold (bank credit) ONLY for dense big/churny changes where a
-        #    snapshot is the right eventual answer.
-        # 4) otherwise stream whole row-runs (coherent lines, no holes).
+        # --- decide (v11): latency-first two-lane scheduling ---
+        # Lane A (interactive): runs packed NEWEST-FIRST (age ascending),
+        # any length, budget = min(credit, A_RES, rate-share remaining).
+        # Recency is the right urgency signal: a line the user just typed
+        # or output that just appeared must not queue behind backlog
+        # (v9/v10 waited 5-6 s), while the rate share (A_RATE) guarantees
+        # bands always keep >= rate - A_RATE to bank against.
+        # Bulk: dense -> age-targeted crop-bands; sparse -> age-oldest
+        # prefix-packed runs. Freeze only when nothing fits.
         dense = self._crop_fill >= 0.35
         use_snap = False
-        q_send: int | None = None
+        mode = ""
+        pkt_crop: bytes | None = None
+
+        runs = self._row_runs(dirty)
+        if len(runs) > 1:
+            run_age = np.array(
+                [int(self.age[run].max()) for run in runs], dtype=np.int64)
+            runs_desc = [runs[i] for i in np.argsort(-run_age, kind="stable")]
+            runs_asc = [runs[i] for i in np.argsort(run_age, kind="stable")]
+        else:
+            runs_desc = runs_asc = runs
+
+        # quality: all-fit first, else a floor that lets a packet go.
+        # Bulk needs >= 3 tiles worth of credit; interactive (lane A)
+        # ships on a single-tile floor so a lone keystroke never waits.
+        q_bulk: int | None = None
+        for q in QUALITY_LADDER:
+            if q >= Q_FLOOR_TILE and n * (self._est_tile(q) + 4) + 2 <= credit:
+                q_bulk = q
+                break
+        if q_bulk is None:
+            for q in QUALITY_LADDER:
+                if (q >= Q_FLOOR_TILE
+                        and credit >= 3 * (self._est_tile(q) + 4) + 3):
+                    q_bulk = q
+                    break
+        q_int: int | None = None
+        for q in QUALITY_LADDER:
+            if q >= Q_FLOOR_TILE and credit >= self._est_tile(q) + 4 + 3:
+                q_int = q
+                break
+
+        sent_idxs: list[int] = []
+        parts: list[bytes] = []
+        total = 3                          # P_TILES: type + u16 count
+
+        def _pack(run_list: list[list[int]], budget: int, q: int) -> None:
+            """Append each run's prefix while it fits `budget` (absolute
+            packet size). Suffixes stay dirty and continue next frame."""
+            nonlocal total
+            for run in run_list:
+                if total >= budget:
+                    break
+                for i in run:
+                    tb = _webp(self._tile(frame, i), q)
+                    if total + 4 + len(tb) > budget:
+                        break               # prefix sent; suffix next frame
+                    self._note_tile(q, len(tb))
+                    self.stats["q_hist"][q] = \
+                        self.stats["q_hist"].get(q, 0) + 1
+                    total += 4 + len(tb)
+                    parts.append(struct.pack("<HH", i, len(tb)))
+                    parts.append(tb)
+                    sent_idxs.append(i)
+                if budget - total < 512:
+                    break
+
+        # ---- lane A: recency-first (the latency guarantee) ----
+        # newest run first, capped by frame budget AND the long-run
+        # rate share so bulk (bands) can always keep banking.
+        a_share = A_RATE * t + A_BURST - self._a_spent
+        if q_int is not None and a_share > 0 and runs_asc:
+            a_budget = min(int(credit), 3 + A_RES, 3 + int(a_share))
+            _pack(runs_asc, a_budget, q_int)
+            if sent_idxs:
+                self._a_spent += total - 3
+                # ages reset so bulk/bands target only the remaining rows
+                self.age[np.asarray(sent_idxs, dtype=np.int64)] = 0
 
         if dense:
-            # --- v5: progressive bands, no multi-second holds ---
-            # send the LARGEST tile-aligned top band of the bbox that fits
-            # credit, at the best quality that fits. The band shrinks the
-            # remaining bbox top-down, so the viewer watches the update
-            # paint in instead of staring at a frozen screen.
+            # --- progressive bands: largest affordable band of the bbox,
+            # age-targeted so the longest-waiting rows paint first.
+            # Budget = credit left AFTER lane A took its interactive
+            # slice, so bands can never starve typing.
+            cred = credit - total
             x0, y0, x1, y1 = self._crop_geom
-            bh_total = y1 - y0
-            if credit >= self._full_block:
-                # full-bbox first when affordable; partial bands target the
-                # OLDEST dirty rows (age map) so churn at the top cannot
-                # pin the band forever while the bottom rots stale.
+            if cred >= self._full_block:
+                # partial bands target the OLDEST dirty rows (age map) so
+                # churn at the top cannot pin the band forever while the
+                # bottom rots stale.
                 dirty_arr = np.asarray(dirty, dtype=np.int64)
                 tys = dirty_arr // self.tw
                 txs = dirty_arr % self.tw
@@ -349,97 +422,77 @@ class ScreenEncoder:
                         bx1 = min(int(txs[sel].max()) * TILE + TILE, self.w)
                     y0b, y1b = ty0b * TILE, min(ty1b * TILE, self.h)
                     band = frame[y0b:y1b, bx0:bx1]
-                    probe = len(_webp(band[::4, ::4], 82))
+                    if frac >= 1.0:
+                        # bbox is tile-aligned => same pixels _build_probes
+                        # already encoded at q82 (saves a duplicate 15 ms)
+                        probe = self._probe_q82
+                    else:
+                        probe = len(_webp(band[::4, ::4], 82))
                     for q in QUALITY_LADDER:
                         if q < Q_FLOOR_FULL:
                             break
                         est = int(probe * _FULL_F[q] * _EST_SAFETY) + 9
-                        if est > credit:
+                        if est > cred:
                             continue
                         blob = _webp(band, q)
-                        if len(blob) + 9 > credit:
+                        if len(blob) + 9 > cred:
                             # estimate missed: block retries until credit
                             # reaches what this content actually costs
                             self._full_block = int((len(blob) + 9) * 1.02)
                             break
-                        pkt = (bytes([P_CROP])
-                               + struct.pack("<HHHH", bx0, y0b,
-                                             bx1 - bx0, y1b - y0b)
-                               + blob)
+                        pkt_crop = (bytes([P_CROP])
+                                    + struct.pack("<HHHH", bx0, y0b,
+                                                  bx1 - bx0, y1b - y0b)
+                                    + blob)
                         rec = _webp_dec(blob)
                         self.recon[y0b:y1b, bx0:bx1] = rec
                         self.sent_src[y0b:y1b, bx0:bx1] = band
                         self.age.reshape(self.th, self.tw)[ty0b:ty1b,
                             bx0 // TILE:(bx1 + TILE - 1) // TILE] = 0
                         self._full_block = 0
-                        q_send = q
-                        use_snap = True
+                        self.stats["q_hist"][q] = \
+                            self.stats["q_hist"].get(q, 0) + 1
                         mode = "crop"
+                        use_snap = True
                         break
                     if use_snap:
                         break
-            if not use_snap:
-                return self._freeze()      # credit < smallest band: bank a beat
-        else:
-            # --- scattered change: whole row-runs (skip the gaps) ---
-            q_tiles: int | None = None
-            for q in QUALITY_LADDER:
-                if q >= Q_FLOOR_TILE and n * (self._est_tile(q) + 4) + 2 <= credit:
-                    q_tiles = q
-                    break
-            if q_tiles is not None:
-                q_send = q_tiles
-            else:
-                for q in QUALITY_LADDER:
-                    if (q >= Q_FLOOR_TILE
-                            and credit >= 3 * (self._est_tile(q) + 4) + 3):
-                        q_send = q
-                        break
-                if q_send is None:
-                    return self._freeze()
+            # band failure falls through: with dense changes the bulk
+            # answer is to bank a beat (lane B is sparse-only below)
+        # ---- lane B: bulk runs (age-sorted prefixes) ----
+        # Sparse changes only. When dense, the bulk answer is a band
+        # (bank a beat, then ship an efficient full-width strip): raw
+        # tile trickle into a dense change is 2-3x less byte-efficient
+        # per pixel and - measured - starved bands forever. Lane A still
+        # goes every frame regardless.
+        if not use_snap and not dense and q_bulk is not None:
+            sent_set = set(sent_idxs)
+            rest = [[i for i in r if i not in sent_set] for r in runs_desc]
+            _pack([r for r in rest if r], int(credit), q_bulk)
 
-        if not use_snap:
-            # Starvation fix: try runs OLDEST-FIRST (age map, stable so
-            # magnitude breaks ties). Previously runs were tried in pure
-            # magnitude order: wide lines (est > typical credit) were
-            # skipped every frame while smaller runs drained the credit,
-            # so the same rows could stay stale for 20+ seconds.
-            # Also: pack a run's PREFIX when the whole run doesn't fit
-            # (the suffix stays dirty and continues next frame) instead of
-            # dropping the whole run - a line draws in over a frame or two
-            # rather than never arriving.
-            runs = self._row_runs(dirty)
-            if len(runs) > 1:
-                run_age = np.array(
-                    [int(self.age[run].max()) for run in runs], dtype=np.int64)
-                runs = [runs[i] for i in np.argsort(-run_age, kind="stable")]
-            sent_idxs: list[int] = []
-            parts: list[bytes] = []
-            total = 1 + 2                      # actual packet bytes so far
-            for run in runs:
-                if credit - total < 512:
-                    break
-                for i in run:
-                    tb = _webp(self._tile(frame, i), q_send)
-                    self._note_tile(q_send, len(tb))
-                    if total + 4 + len(tb) > credit:
-                        break                  # prefix sent; suffix next frame
-                    total += 4 + len(tb)
-                    parts.append(struct.pack("<HH", i, len(tb)))
-                    parts.append(tb)
-                    sent_idxs.append(i)
-                if credit - total < 512:
-                    break
-            if not sent_idxs:
-                return self._freeze()
-            pkt = bytes([P_TILES]) + struct.pack("<H", len(sent_idxs)) + b"".join(parts)
-            self._apply_tiles(frame, sent_idxs)
+        # ---- finalize ----
+        if use_snap:
+            if sent_idxs:
+                # one frame, two segments: interactive tiles + bulk band
+                seg = (bytes([P_TILES]) + struct.pack("<H", len(sent_idxs))
+                       + b"".join(parts))
+                pkt = (bytes([P_BATCH, 2])
+                       + struct.pack("<H", len(seg)) + seg
+                       + struct.pack("<H", len(pkt_crop)) + pkt_crop)
+            else:
+                pkt = pkt_crop
+        elif sent_idxs:
+            pkt = (bytes([P_TILES]) + struct.pack("<H", len(sent_idxs))
+                   + b"".join(parts))
             mode = "tiles"
+        else:
+            return self._freeze()
+        if sent_idxs:
+            self._apply_tiles(frame, sent_idxs)
 
         self.budget.pay(len(pkt))
         self.stats["bytes"] += len(pkt)
         self.stats[mode] = self.stats.get(mode, 0) + 1
-        self.stats["q_hist"][q_send] = self.stats["q_hist"].get(q_send, 0) + 1
         return pkt
 
 
@@ -463,6 +516,15 @@ class ScreenDecoder:
             if self.frame is None:
                 self.frame = np.zeros((self.h, self.w, 3), np.uint8)
             self.frame[y:y + h, x:x + w] = img
+            return self.frame
+        if typ == P_BATCH:
+            n = pkt[1]
+            off = 2
+            for _ in range(n):
+                (ln,) = struct.unpack_from("<H", pkt, off)
+                off += 2
+                self.decode(pkt[off:off + ln])
+                off += ln
             return self.frame
         if typ == P_TILES:
             (n,) = struct.unpack_from("<H", pkt, 1)
