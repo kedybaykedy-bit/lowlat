@@ -112,6 +112,21 @@ budget:  allowed(t) = min(900 KB, burst + 15 KB/s·t, 900 KB − 10 KB/s·(60 s 
 * The wire model treats a *hold* as absence of update (0 bytes) — how any
   TCP/WebSocket screen stream works.
 
+### Resolution knob: the same 15 KB/s at 480p
+
+Downscaling the recording to 854×480 and re-running under the identical
+15 KB/s budget (same codec, same floors) shows how much of the budget was
+pure pixel count:
+
+| 15 KB/s on | PSNR mean / p5 | stale (worst) | interactive p90 | >6 s stalls | encode speed |
+|---|---|---|---|---|---|
+| 1920×1080 | 24.28 / 13.44 dB | 25.4 % (7.8 s) | 4.83 s | 1743 | 0.4× realtime |
+| **854×480** | **32.1 / 13.1 dB** | **7.9 % (2.9 s)** | **2.67 s** | **3** | **1.4× realtime** |
+
+At 480p the encoder is already faster than real time in pure Python, and
+the cut-storm stalls almost vanish (3 events over 6 s vs 1743). Video:
+[`lowlat-s_480p_15kbps_compare.mp4`](https://github.com/kedybaykedy-bit/lowlat/releases/download/demo-15kbps/lowlat-s_480p_15kbps_compare.mp4).
+
 ## Files
 
 | file | contents |

@@ -15,7 +15,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-H, W, T = 1080, 1920, 32
+H, W, T = 1080, 1920, 32   # overwritten from the actual frames
 TH, TW = 34, 60
 VALID = np.full((TH, TW), T * T, np.float64)
 VALID[33, :] = (H - 33 * T) * T  # last row is 24 px tall
@@ -27,6 +27,15 @@ def tile_mean(d: np.ndarray) -> np.ndarray:
     dp[:H, :W] = d
     s = dp.reshape(TH, T, TW, T).sum(axis=(1, 3))
     return s / VALID
+
+
+def setup(h: int, w: int) -> None:
+    global H, W, TH, TW, VALID
+    H, W = h, w
+    TH, TW = (h + T - 1) // T, (w + T - 1) // T
+    VALID = np.full((TH, TW), T * T, np.float64)
+    last = h - (TH - 1) * T
+    VALID[TH - 1, :] = last * T  # last row may be partial
 
 
 def main() -> None:
@@ -41,6 +50,11 @@ def main() -> None:
 
     dc = cv2.VideoCapture(args.decoded)
     sc = cv2.VideoCapture(args.src)
+    ok0, f0 = sc.read()
+    if not ok0:
+        raise SystemExit("cannot read source")
+    sc.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    setup(f0.shape[0], f0.shape[1])
     fresh = np.ones((TH, TW), bool)
     run = np.zeros((TH, TW), np.int32)
     run_nchg = np.full((TH, TW), -1, np.int32)  # change size at run START
