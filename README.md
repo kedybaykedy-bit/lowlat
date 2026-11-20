@@ -70,19 +70,21 @@ tiles classified text-as-lossy  : 0
 ### Real 60-second desktop recording at 15 KB/s (LOWLAT-S)
 
 A full minute of a real 1080p/30 desktop (terminal, wallpaper, window fades,
-notifications) streamed through the rate-controlled `stream/` codec under a
-hard 15 KB/s budget:
+notifications, scene cuts) streamed through the rate-controlled `stream/`
+codec under a hard 15 KB/s budget:
 
 | metric | value |
 |---|---|
-| average rate | **14.08 KB/s** (cap 900 KB / 60 s) |
-| total transferred | **844.6 KB** ✅ |
-| PSNR mean / p5 | **26.05 / 16.65 dB** |
-| tile quality | **97 % at q82+** (text floor never breached) |
+| average rate | **14.92 KB/s** (cap 900 KB / 60 s) |
+| total transferred | **895.0 KB** ✅ |
+| max send gap (silent wire) | **0.7 s** — never dead for more than a beat |
+| PSNR mean / p5 | **24.5 / 13.2 dB** |
+| tile quality | **q82+ floor** (text never mushed; bands ≥ q75) |
 
-The encoder banks credit during holds, refreshes the whole screen with
-coherent full-frame snapshots when activity demands it, and paints calm
-updates as whole text-lines at q92 — see
+The encoder schedules by *dirty-age* (oldest waiting change first), paints
+dense changes as age-targeted crop-bands that stream in progressively, and
+prefix-packs text lines so partial credit still makes progress — the wire
+never freezes for a multi-second snapshot bank. See
 [`experiments/streaming/`](experiments/streaming/) for the contact sheet,
 rate/PSNR timeline and full stats, or watch the
 [side-by-side demo video](https://github.com/kedybaykedy-bit/lowlat/releases/download/demo-15kbps/lowlat-s_15kbps_compare.mp4).

@@ -15,6 +15,33 @@ sys.path.insert(0, str(Path(__file__).parent))
 from codec import Budget, ScreenDecoder, ScreenEncoder  # noqa: E402
 
 
+def _staleness(psnrs: list, fps: float, thr: float = 18.0) -> dict:
+    """Windows where the decode is visibly stale (PSNR < thr)."""
+    if not psnrs:
+        return {}
+    ps = np.asarray(psnrs)
+    stale = ps < thr
+    runs, cur, start = [], 0, 0
+    for i, s in enumerate(stale):
+        if s:
+            if cur == 0:
+                start = i
+            cur += 1
+        else:
+            if cur:
+                runs.append((start, cur))
+            cur = 0
+    if cur:
+        runs.append((start, cur))
+    long_runs = [(round(a / fps, 1), round(d / fps, 1))
+                 for a, d in runs if d / fps > 1.0]
+    return dict(threshold_db=thr,
+                stale_pct=round(100 * float(stale.mean()), 1),
+                stale_total_s=round(float(stale.sum()) / fps, 1),
+                windows_gt1s=long_runs,
+                longest_s=round(max((d for _, d in runs), default=0) / fps, 1))
+
+
 def psnr(a: np.ndarray, b: np.ndarray) -> float:
     m = np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2)
     return 99.0 if m == 0 else 10 * np.log10(255.0 * 255.0 / m)
@@ -108,11 +135,12 @@ def main() -> None:
         bytes_total=int(sent.sum()),
         rate_kbps=round(rate_kbps, 2),
         within_budget=bool(sent.sum() <= budget.total + 1),
-        modes={k: st.get(k, 0) for k in ("key", "skip", "full", "tiles", "frozen")},
+        modes={k: st.get(k, 0) for k in ("key", "skip", "full", "crop", "tiles", "frozen")},
         quality_hist={str(k): v for k, v in sorted(st.get("q_hist", {}).items())},
         psnr_mean=round(float(np.mean(psnrs)), 2) if psnrs else None,
         psnr_p5=round(float(np.percentile(psnrs, 5)), 2) if psnrs else None,
         psnr_min=round(float(np.min(psnrs)), 2) if psnrs else None,
+        staleness=_staleness(psnrs, fps),
         wall_s=round(wall, 1),
         encode_x_realtime=round(duration / wall, 1) if wall else None,
         per_frame_bytes=per_frame,
