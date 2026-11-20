@@ -474,11 +474,12 @@ class ScreenEncoder:
         if use_snap:
             if sent_idxs:
                 # one frame, two segments: interactive tiles + bulk band
+                # (u32 lengths: a full-frame band at high rates > 64 KB)
                 seg = (bytes([P_TILES]) + struct.pack("<H", len(sent_idxs))
                        + b"".join(parts))
                 pkt = (bytes([P_BATCH, 2])
-                       + struct.pack("<H", len(seg)) + seg
-                       + struct.pack("<H", len(pkt_crop)) + pkt_crop)
+                       + struct.pack("<I", len(seg)) + seg
+                       + struct.pack("<I", len(pkt_crop)) + pkt_crop)
             else:
                 pkt = pkt_crop
         elif sent_idxs:
@@ -521,8 +522,8 @@ class ScreenDecoder:
             n = pkt[1]
             off = 2
             for _ in range(n):
-                (ln,) = struct.unpack_from("<H", pkt, off)
-                off += 2
+                (ln,) = struct.unpack_from("<I", pkt, off)
+                off += 4
                 self.decode(pkt[off:off + ln])
                 off += ln
             return self.frame
